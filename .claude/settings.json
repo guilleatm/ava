@@ -5,7 +5,14 @@
       "WebSearch(*)",
       "Read(*)",
       "Bash(fwconsole *)",
-      "Bash(asterisk -rx *)"
+      "Bash(asterisk -rx *)",
+      "Bash(python -m pytest *)",
+      "Bash(cd /home/carles/Documentos/Atteq/ava && python -m pytest *)",
+      "Bash(git status *)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Glob(*)",
+      "Grep(*)"
     ],
     "deny": []
   }
