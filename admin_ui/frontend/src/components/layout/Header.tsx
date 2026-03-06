@@ -38,8 +38,10 @@ const Header = () => {
                 ))}
             </div>
 
-            {/* Global actions removed - pages handle their own saving */}
             <div className="flex items-center gap-2">
+                <button className="px-3 py-1.5 text-sm font-medium rounded-md bg-destructive text-destructive-foreground hover:bg-destructive/90">
+                    git destroy
+                </button>
             </div>
         </header>
     );
