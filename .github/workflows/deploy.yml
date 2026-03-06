@@ -29,8 +29,7 @@ jobs:
         run: |
           aws ec2 authorize-security-group-ingress \
             --group-id ${{ vars.DEPLOY_SECURITY_GROUP_ID }} \
-            --protocol tcp --port 22 \
-            --cidr ${{ steps.ip.outputs.addr }}/32
+            --ip-permissions "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=${{ steps.ip.outputs.addr }}/32,Description=TMP GH ACTION DEPLOY}]"
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.DEPLOY_AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.DEPLOY_AWS_SECRET_ACCESS_KEY }}
@@ -60,8 +59,7 @@ jobs:
         run: |
           aws ec2 revoke-security-group-ingress \
             --group-id ${{ vars.DEPLOY_SECURITY_GROUP_ID }} \
-            --protocol tcp --port 22 \
-            --cidr ${{ steps.ip.outputs.addr }}/32
+            --ip-permissions "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=${{ steps.ip.outputs.addr }}/32,Description=TMP GH ACTION DEPLOY}]"
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.DEPLOY_AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.DEPLOY_AWS_SECRET_ACCESS_KEY }}
