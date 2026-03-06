@@ -18,15 +18,30 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
+      - name: Get runner IP
+        id: ip
+        run: echo "addr=$(curl -s https://checkip.amazonaws.com)" >> $GITHUB_OUTPUT
+
+      - name: Allow runner IP in security group
+        run: |
+          aws ec2 authorize-security-group-ingress \
+            --group-id ${{ vars.DEPLOY_SECURITY_GROUP_ID }} \
+            --protocol tcp --port 22 \
+            --cidr ${{ steps.ip.outputs.addr }}/32
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.DEPLOY_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.DEPLOY_AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ vars.DEPLOY_AWS_REGION || 'eu-west-3' }}
+
       - name: Deploy to EC2 via SSH
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ vars.DEPLOY_HOST }}
-          username: ${{ vars.DEPLOY_USER || 'ubuntu' }}
+          username: ${{ vars.DEPLOY_USER || 'ec2-user' }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           script: |
             set -e
-            cd ${{ vars.DEPLOY_PATH || '/home/ubuntu/ava' }}
+            cd ${{ vars.DEPLOY_PATH || '/home/ec2-user/ava' }}
             BRANCH="${{ github.event.inputs.branch || 'main' }}"
             SERVICES="${{ github.event.inputs.services || 'ai_engine' }}"
             echo "==> Pulling branch: $BRANCH"
@@ -36,3 +51,15 @@ jobs:
             echo "==> Restarting: $SERVICES"
             docker compose -p asterisk-ai-voice-agent restart $SERVICES
             echo "==> Done"
+
+      - name: Remove runner IP from security group
+        if: always()
+        run: |
+          aws ec2 revoke-security-group-ingress \
+            --group-id ${{ vars.DEPLOY_SECURITY_GROUP_ID }} \
+            --protocol tcp --port 22 \
+            --cidr ${{ steps.ip.outputs.addr }}/32
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.DEPLOY_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.DEPLOY_AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ vars.DEPLOY_AWS_REGION || 'eu-west-3' }}
