@@ -1,5 +1,6 @@
 name: Deploy to AWS
 
+# Triggers: automatic on push to main, or manual with optional branch override.
 on:
   push:
     branches: [main]
@@ -9,51 +10,186 @@ on:
         description: 'Branch to deploy'
         required: false
         default: 'main'
-      services:
-        description: 'Services to restart (space-separated, e.g. "ai_engine admin_ui")'
-        required: false
-        default: 'ai_engine'
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # Principle of least privilege: this job only reads the repo metadata.
+    # All AWS actions use the explicit credentials below.
+    permissions:
+      contents: read
+
     steps:
-      - name: Allow runner IP in security group
-        run: |
-          aws ec2 authorize-security-group-ingress \
-            --group-id ${{ vars.DEPLOY_SECURITY_GROUP_ID }} \
-            --ip-permissions "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=${{ steps.ip.outputs.addr }}/32,Description=TMP GH ACTION DEPLOY}]"
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.DEPLOY_AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.DEPLOY_AWS_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: ${{ vars.DEPLOY_AWS_REGION || 'eu-west-3' }}
-
-      - name: Deploy to EC2 via SSH
-        uses: appleboy/ssh-action@v1
+      # -----------------------------------------------------------------------
+      # 1. Authenticate to AWS using the official action.
+      #    Required variables/secrets:
+      #      secrets.DEPLOY_AWS_ACCESS_KEY_ID
+      #      secrets.DEPLOY_AWS_SECRET_ACCESS_KEY
+      #      vars.DEPLOY_AWS_REGION          (default: eu-west-3)
+      #
+      #    The IAM user/role must have:
+      #      ssm:SendCommand  on the target instance
+      #      ssm:GetCommandInvocation
+      # -----------------------------------------------------------------------
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          host: ${{ vars.DEPLOY_HOST }}
-          username: ${{ vars.DEPLOY_USER || 'ec2-user' }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          script: |
-            set -e
-            cd ${{ vars.DEPLOY_PATH || '/home/ec2-user/ava' }}
-            BRANCH="${{ github.event.inputs.branch || 'main' }}"
-            SERVICES="${{ github.event.inputs.services || 'ai_engine' }}"
-            echo "==> Pulling branch: $BRANCH"
-            git fetch origin
-            git checkout "$BRANCH"
-            git pull origin "$BRANCH"
-            echo "==> Restarting: $SERVICES"
-            docker compose -p asterisk-ai-voice-agent restart $SERVICES
-            echo "==> Done"
+          aws-access-key-id: ${{ secrets.DEPLOY_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.DEPLOY_AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.DEPLOY_AWS_REGION || 'eu-west-3' }}
 
-      - name: Remove runner IP from security group
-        if: always()
-        run: |
-          aws ec2 revoke-security-group-ingress \
-            --group-id ${{ vars.DEPLOY_SECURITY_GROUP_ID }} \
-            --ip-permissions "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=${{ steps.ip.outputs.addr }}/32,Description=TMP GH ACTION DEPLOY}]"
+      # -----------------------------------------------------------------------
+      # 2. Run the deploy script on EC2 via AWS SSM Run Command.
+      #
+      #    Why SSM instead of SSH:
+      #      - No port 22 needs to be open (zero attack surface).
+      #      - No temporary security-group rule manipulation.
+      #      - Authentication is IAM-based, not key-file-based.
+      #      - Native AWS audit trail in CloudTrail.
+      #
+      #    Required variable:
+      #      vars.DEPLOY_INSTANCE_ID         (e.g. i-0abc1234def56789)
+      #      vars.DEPLOY_PATH                (default: /home/ec2-user/ava)
+      #
+      #    EC2 prerequisites (one-time setup):
+      #      - SSM Agent running (pre-installed on Amazon Linux 2/2023).
+      #      - Instance profile with AmazonSSMManagedInstanceCore policy.
+      # -----------------------------------------------------------------------
+      - name: Deploy via SSM Run Command
         env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.DEPLOY_AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.DEPLOY_AWS_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: ${{ vars.DEPLOY_AWS_REGION || 'eu-west-3' }}
+          INSTANCE_ID: ${{ vars.DEPLOY_INSTANCE_ID }}
+          BRANCH: ${{ github.event.inputs.branch || 'main' }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/home/ec2-user/ava' }}
+        run: |
+          set -euo pipefail
+
+          # -------------------------------------------------------------------
+          # Build the remote deploy script.
+          #
+          # Strategy for operator configs:
+          #   - config/ai-agent.local.yaml and .env are git-IGNORED — git pull
+          #     will never touch them. We back them up anyway as a safety net
+          #     in case they were accidentally staged/tracked on this server.
+          #   - Any local modifications to TRACKED files (e.g. ai-agent.yaml
+          #     edited manually on server) are stashed before the pull and
+          #     restored afterwards. If the stash pop produces conflicts the
+          #     deploy fails fast so the operator can resolve them manually.
+          #
+          # Docker rebuild strategy:
+          #   --build          rebuilds the image (picks up Dockerfile /
+          #                    requirements.txt changes, not just src/ volume)
+          #   --force-recreate always recreates the container so env changes
+          #                    and new image layers take effect immediately
+          #   local_ai_server  is intentionally excluded — it is heavy to
+          #                    build and rarely changes with code deploys.
+          # -------------------------------------------------------------------
+          cat > /tmp/remote-deploy.sh << 'SCRIPT'
+          #!/bin/bash
+          set -euo pipefail
+
+          DEPLOY_PATH="__DEPLOY_PATH__"
+          BRANCH="__BRANCH__"
+
+          echo "==> Deploy: branch=${BRANCH}  path=${DEPLOY_PATH}"
+          cd "${DEPLOY_PATH}"
+
+          # Back up operator files (git-ignored; written by Admin UI / setup wizard)
+          echo "==> Backing up operator configs"
+          cp config/ai-agent.local.yaml /tmp/_deploy_local.yaml 2>/dev/null || true
+          cp .env /tmp/_deploy_env 2>/dev/null || true
+
+          # Stash any local modifications to tracked files to allow a clean pull
+          echo "==> Stashing local tracked modifications"
+          git stash push -m pre-deploy 2>&1 | head -10 || true
+
+          # Pull latest code
+          echo "==> Fetching and checking out ${BRANCH}"
+          git fetch origin
+          git checkout "${BRANCH}"
+          git pull --ff-only origin "${BRANCH}"
+
+          # Restore stashed modifications (fails loudly if there are conflicts)
+          echo "==> Restoring stashed modifications"
+          if git stash list | grep -q pre-deploy; then
+            git stash pop
+          fi
+
+          # Restore git-ignored operator files (never touched by git, restored
+          # purely as a safety net in case backup above found something)
+          echo "==> Restoring operator configs"
+          cp /tmp/_deploy_local.yaml config/ai-agent.local.yaml 2>/dev/null || true
+          cp /tmp/_deploy_env .env 2>/dev/null || true
+
+          # Rebuild and restart application services.
+          # local_ai_server is excluded — restart it manually if its image changed.
+          echo "==> Rebuilding and restarting ai_engine and admin_ui"
+          docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate \
+            ai_engine admin_ui
+
+          echo "==> Deploy complete"
+          SCRIPT
+
+          # Inject runtime values into the script (avoids shell-in-shell quoting issues)
+          sed -i "s|__DEPLOY_PATH__|${DEPLOY_PATH}|g" /tmp/remote-deploy.sh
+          sed -i "s|__BRANCH__|${BRANCH}|g" /tmp/remote-deploy.sh
+
+          # Base64-encode the script so SSM receives it as a single safe string.
+          # The remote side decodes and pipes it to bash, preserving set -euo pipefail.
+          ENCODED=$(base64 -w 0 /tmp/remote-deploy.sh)
+
+          PARAMS=$(jq -cn --arg cmd "echo ${ENCODED} | base64 -d | bash" \
+            '{"commands": [$cmd]}')
+
+          echo "Sending command to instance: ${INSTANCE_ID}"
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "${INSTANCE_ID}" \
+            --document-name "AWS-RunShellScript" \
+            --parameters "${PARAMS}" \
+            --comment "Deploy branch=${BRANCH} run=${{ github.run_id }}" \
+            --timeout-seconds 600 \
+            --query "Command.CommandId" \
+            --output text)
+
+          echo "SSM Command ID: ${COMMAND_ID}"
+
+          # -------------------------------------------------------------------
+          # Poll for completion (up to 10 minutes to allow Docker image builds).
+          # SSM's built-in waiter times out too quickly for heavy builds.
+          # -------------------------------------------------------------------
+          TIMEOUT=600
+          ELAPSED=0
+          POLL_INTERVAL=10
+
+          while true; do
+            INVOCATION=$(aws ssm get-command-invocation \
+              --command-id "${COMMAND_ID}" \
+              --instance-id "${INSTANCE_ID}" 2>/dev/null \
+              || echo '{"StatusDetails":"Pending"}')
+
+            STATUS=$(echo "${INVOCATION}" | jq -r '.StatusDetails // "Pending"')
+            echo "[${ELAPSED}s] ${STATUS}"
+
+            case "${STATUS}" in
+              Success)
+                echo "--- Remote output ---"
+                echo "${INVOCATION}" | jq -r '.StandardOutputContent'
+                exit 0
+                ;;
+              Failed|Cancelled|TimedOut|Undeliverable|Terminated)
+                echo "--- Remote stdout ---"
+                echo "${INVOCATION}" | jq -r '.StandardOutputContent'
+                echo "--- Remote stderr ---"
+                echo "${INVOCATION}" | jq -r '.StandardErrorContent'
+                echo "::error::Deploy failed with SSM status: ${STATUS}"
+                exit 1
+                ;;
+            esac
+
+            if [ "${ELAPSED}" -ge "${TIMEOUT}" ]; then
+              echo "::error::Timed out waiting for deploy after ${TIMEOUT}s"
+              exit 1
+            fi
+
+            sleep "${POLL_INTERVAL}"
+            ELAPSED=$((ELAPSED + POLL_INTERVAL))
+          done
