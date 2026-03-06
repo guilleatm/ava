@@ -1,0 +1,38 @@
+name: Deploy to AWS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to deploy'
+        required: false
+        default: 'main'
+      services:
+        description: 'Services to restart (space-separated, e.g. "ai_engine admin_ui")'
+        required: false
+        default: 'ai_engine'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to EC2 via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ vars.DEPLOY_HOST }}
+          username: ${{ vars.DEPLOY_USER || 'ubuntu' }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -e
+            cd ${{ vars.DEPLOY_PATH || '/home/ubuntu/ava' }}
+            BRANCH="${{ github.event.inputs.branch || 'main' }}"
+            SERVICES="${{ github.event.inputs.services || 'ai_engine' }}"
+            echo "==> Pulling branch: $BRANCH"
+            git fetch origin
+            git checkout "$BRANCH"
+            git pull origin "$BRANCH"
+            echo "==> Restarting: $SERVICES"
+            docker compose -p asterisk-ai-voice-agent restart $SERVICES
+            echo "==> Done"
