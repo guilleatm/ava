@@ -204,6 +204,95 @@ DEFAULT_REQUEST_TRANSCRIPT_HTML_TEMPLATE = """
 # Email templates are rendered with Jinja2 (sandboxed). Variables below are
 # provided to both templates (some may be empty depending on context/tool).
 
+DEFAULT_SEND_DATA_EMAIL_HTML_TEMPLATE = """
+<html>
+<head>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      line-height: 1.6;
+      color: #333;
+      max-width: 700px;
+      margin: 0 auto;
+    }
+    .header {
+      background: #4F46E5;
+      color: white;
+      padding: 20px;
+      border-radius: 5px 5px 0 0;
+    }
+    .header h2 { margin: 0; font-size: 18px; }
+    .content {
+      padding: 24px;
+      background: #ffffff;
+      border: 1px solid #e5e7eb;
+      border-top: none;
+      border-radius: 0 0 5px 5px;
+    }
+    .meta {
+      font-size: 13px;
+      color: #6b7280;
+      margin-bottom: 20px;
+    }
+    table.data-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 8px;
+    }
+    table.data-table th {
+      text-align: left;
+      padding: 8px 14px;
+      background: #f3f4f6;
+      font-weight: 600;
+      width: 35%;
+      border: 1px solid #e5e7eb;
+    }
+    table.data-table td {
+      padding: 8px 14px;
+      border: 1px solid #e5e7eb;
+    }
+    .footer {
+      margin-top: 24px;
+      font-size: 12px;
+      color: #9ca3af;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h2>{{ subject }}</h2>
+  </div>
+  <div class="content">
+    <p class="meta">
+      Call ID: <strong>{{ call_id }}</strong>
+      {% if context_name %} &nbsp;|&nbsp; Context: <strong>{{ context_name }}</strong>{% endif %}
+    </p>
+    <table class="data-table">
+      {% for key, value in fields_list %}
+      <tr>
+        <th>{{ key }}</th>
+        <td>{{ value }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    <p class="footer">This email was generated automatically by the AI Voice Agent.</p>
+  </div>
+</body>
+</html>
+"""
+
+# -----------------------------------------------------------------------------
+# Variable reference (Jinja2)
+# -----------------------------------------------------------------------------
+#
+# send_data_email variables:
+#   call_id        — unique call identifier
+#   context_name   — AI context (may be empty)
+#   subject        — resolved email subject from config
+#   fields_list    — list of (field_name, field_value) tuples for iteration
+#   <field_name>   — each configured field is also available as a top-level variable,
+#                    e.g. {{ machine_id }}, {{ city }}, {{ client_id }}
+
 EMAIL_TEMPLATE_VARIABLES = [
     {"name": "call_id", "description": "Unique call identifier (e.g., 1770333362.2115)."},
     {"name": "context_name", "description": "Resolved context name for the call (e.g., support, sales)."},

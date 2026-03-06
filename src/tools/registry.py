@@ -588,6 +588,12 @@ Tool Definitions:
             logger.warning(f"Could not import RequestTranscriptTool: {e}")
         
         try:
+            from src.tools.business.send_data_email import SendDataEmailTool
+            self.register(SendDataEmailTool)
+        except ImportError as e:
+            logger.warning(f"Could not import SendDataEmailTool: {e}")
+
+        try:
             from src.tools.business.gcal_tool import GCalendarTool
             self.register(GCalendarTool)
         except ImportError as e:
