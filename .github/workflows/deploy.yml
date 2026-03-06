@@ -20,7 +20,10 @@ jobs:
     steps:
       - name: Get runner IP
         id: ip
-        run: echo "addr=$(curl -s https://checkip.amazonaws.com)" >> $GITHUB_OUTPUT
+        run: |
+          ADDR=$(curl -s https://checkip.amazonaws.com)
+          echo "Runner IP: $ADDR"
+          echo "addr=$ADDR" >> $GITHUB_OUTPUT
 
       - name: Allow runner IP in security group
         run: |
@@ -53,7 +56,7 @@ jobs:
             echo "==> Done"
 
       - name: Remove runner IP from security group
-        if: always()
+        if: false
         run: |
           aws ec2 revoke-security-group-ingress \
             --group-id ${{ vars.DEPLOY_SECURITY_GROUP_ID }} \
