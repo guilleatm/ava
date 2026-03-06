@@ -2,9 +2,9 @@ name: Deploy to AWS
 
 # Triggers: automatic on push to main, or manual with optional branch override.
 on:
-  push:
-    branches: [main]
   workflow_dispatch: {}
+  # push:
+  #   branches: [main]
 
 jobs:
   deploy:
@@ -58,81 +58,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          # -------------------------------------------------------------------
-          # Build the remote deploy script.
-          #
-          # Strategy for operator configs:
-          #   - config/ai-agent.local.yaml and .env are git-IGNORED — git pull
-          #     will never touch them. We back them up anyway as a safety net
-          #     in case they were accidentally staged/tracked on this server.
-          #   - Any local modifications to TRACKED files (e.g. ai-agent.yaml
-          #     edited manually on server) are stashed before the pull and
-          #     restored afterwards. If the stash pop produces conflicts the
-          #     deploy fails fast so the operator can resolve them manually.
-          #
-          # Docker rebuild strategy:
-          #   --build          rebuilds the image (picks up Dockerfile /
-          #                    requirements.txt changes, not just src/ volume)
-          #   --force-recreate always recreates the container so env changes
-          #                    and new image layers take effect immediately
-          #   local_ai_server  is intentionally excluded — it is heavy to
-          #                    build and rarely changes with code deploys.
-          # -------------------------------------------------------------------
-          cat > /tmp/remote-deploy.sh << 'SCRIPT'
-          #!/bin/bash
-          set -euo pipefail
-
-          DEPLOY_PATH="__DEPLOY_PATH__"
-          BRANCH="__BRANCH__"
-
-          echo "==> Deploy: branch=${BRANCH}  path=${DEPLOY_PATH}"
-          cd "${DEPLOY_PATH}"
-
-          # Back up operator files (git-ignored; written by Admin UI / setup wizard)
-          echo "==> Backing up operator configs"
-          cp config/ai-agent.local.yaml /tmp/_deploy_local.yaml 2>/dev/null || true
-          cp .env /tmp/_deploy_env 2>/dev/null || true
-
-          # Stash any local modifications to tracked files to allow a clean pull
-          echo "==> Stashing local tracked modifications"
-          git stash push -m pre-deploy 2>&1 | head -10 || true
-
-          # Pull latest code
-          echo "==> Fetching and checking out ${BRANCH}"
-          git fetch origin
-          git checkout "${BRANCH}"
-          git pull --ff-only origin "${BRANCH}"
-
-          # Restore stashed modifications (fails loudly if there are conflicts)
-          echo "==> Restoring stashed modifications"
-          if git stash list | grep -q pre-deploy; then
-            git stash pop
+          if [[ -z "${INSTANCE_ID}" ]]; then
+            echo "::error::DEPLOY_INSTANCE_ID is not set. Add it in GitHub → Settings → Variables → Actions."
+            exit 1
           fi
 
-          # Restore git-ignored operator files (never touched by git, restored
-          # purely as a safety net in case backup above found something)
-          echo "==> Restoring operator configs"
-          cp /tmp/_deploy_local.yaml config/ai-agent.local.yaml 2>/dev/null || true
-          cp /tmp/_deploy_env .env 2>/dev/null || true
-
-          # Rebuild and restart application services.
-          # local_ai_server is excluded — restart it manually if its image changed.
-          echo "==> Rebuilding and restarting ai_engine and admin_ui"
-          DOCKER_BUILDKIT=0 docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate \
-            ai_engine admin_ui
-
-          echo "==> Deploy complete"
-          SCRIPT
-
-          # Inject runtime values into the script (avoids shell-in-shell quoting issues)
-          sed -i "s|__DEPLOY_PATH__|${DEPLOY_PATH}|g" /tmp/remote-deploy.sh
-          sed -i "s|__BRANCH__|${BRANCH}|g" /tmp/remote-deploy.sh
-
-          # Base64-encode the script so SSM receives it as a single safe string.
-          # The remote side decodes and pipes it to bash, preserving set -euo pipefail.
-          ENCODED=$(base64 -w 0 /tmp/remote-deploy.sh)
-
-          PARAMS=$(jq -cn --arg cmd "echo ${ENCODED} | base64 -d | bash" \
+          PARAMS=$(jq -cn \
+            --arg cmd "bash ${DEPLOY_PATH}/scripts/deploy.sh '${DEPLOY_PATH}' '${BRANCH}'" \
             '{"commands": [$cmd]}')
 
           echo "Sending command to instance: ${INSTANCE_ID}"
