@@ -18,13 +18,6 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Get runner IP
-        id: ip
-        run: |
-          ADDR=$(curl -s https://checkip.amazonaws.com)
-          echo "Runner IP: $ADDR"
-          echo "addr=$ADDR" >> $GITHUB_OUTPUT
-
       - name: Allow runner IP in security group
         run: |
           aws ec2 authorize-security-group-ingress \
@@ -55,7 +48,7 @@ jobs:
             echo "==> Done"
 
       - name: Remove runner IP from security group
-        if: false
+        if: always()
         run: |
           aws ec2 revoke-security-group-ingress \
             --group-id ${{ vars.DEPLOY_SECURITY_GROUP_ID }} \
